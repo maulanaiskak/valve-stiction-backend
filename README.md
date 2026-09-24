@@ -1,6 +1,79 @@
 # valve-stiction-backend
 
-REST + WebSocket backend for the valve stiction dashboard. Reads detection results from TimescaleDB (written by [valve-stiction-ingestion](https://github.com/maulanaiskak/valve-stiction-ingestion)) and serves them to [valve-stiction-frontend](https://github.com/maulanaiskak/valve-stiction-frontend). API-only — the frontend is a separately built/deployed nginx image that reverse-proxies to this service; this repo's build never touches the frontend's source. (An earlier version had this service clone and build the frontend at image-build time — reverted, see `docs/V3_PLAN.md`'s revision note; reaching into another repo's source during a build couples two services that should deploy independently.)
+[![CI](https://github.com/maulanaiskak/valve-stiction-backend/actions/workflows/ci.yml/badge.svg)](https://github.com/maulanaiskak/valve-stiction-backend/actions)
+
+REST + WebSocket backend for a distributed, real-time control-valve stiction detection pipeline. Reads detection results from TimescaleDB and serves them to the dashboard.
+
+**Part of a 5-repo system, and the hub for its full documentation** — see [System Design (HLD)](docs/HLD.md) and [Whitepaper](docs/WHITEPAPER.md) below for the full picture: a train/serve model-generalization failure found, fixed, and honestly bounded; a monolith split into 5 independently-deployable services; 99.6%/AUC 0.9998 live-streaming detection accuracy after the fix.
+
+| Repo | Role |
+|---|---|
+| [simulator](https://github.com/maulanaiskak/valve-stiction-simulator) | Synthetic PV/OP signal generator |
+| [ingestion](https://github.com/maulanaiskak/valve-stiction-ingestion) | MQTT subscribe, windowing, forwards to detection |
+| [detection](https://github.com/maulanaiskak/valve-stiction-detection) | Classic detector + trained RF model |
+| **backend** (this repo) | REST + WebSocket API |
+| [frontend](https://github.com/maulanaiskak/valve-stiction-frontend) | React dashboard |
+
+## System architecture
+
+```mermaid
+flowchart LR
+    subgraph Edge
+        SIM[Simulator]
+    end
+    MQ[[Mosquitto]]
+    ING[Ingestion]
+    DET["Detection\nclassic + RF"]
+    DB[(TimescaleDB)]
+    BE["Backend (this repo)\nREST + WebSocket"]
+    FE[Frontend]
+
+    SIM -->|MQTT| MQ --> ING
+    ING -->|"gRPC (V1) / Kafka (V2)"| DET
+    DET -->|result| ING
+    ING -->|persist| DB
+    DB --> BE
+    BE -->|"/api, /ws"| FE
+```
+
+Full requirement traceability (FR/NFR), the ERD, sequence diagrams, and state diagrams for every service are in **[docs/HLD.md](docs/HLD.md)**.
+
+## Where this service fits
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant DB as TimescaleDB
+    participant BE as Backend (this repo)
+    participant FE as Frontend
+
+    loop every 1s
+        BE->>DB: SELECT latest status
+        BE-->>FE: WS push if changed
+    end
+    FE->>BE: GET recent windows
+    BE->>DB: SELECT recent windows
+    DB-->>BE: rows
+    BE-->>FE: JSON
+```
+
+## Data model
+
+```mermaid
+erDiagram
+    WINDOW_RESULTS {
+        bigserial id PK
+        text sensor_id
+        timestamptz window_start
+        text label "classic: yes / no / uncertain"
+        double ellipse_index
+        boolean kano_verdict
+        text rf_label "RF: yes / no, nullable"
+        double rf_probability "nullable"
+        double_array pv
+        double_array op
+    }
+```
 
 ## API
 
@@ -8,6 +81,8 @@ REST + WebSocket backend for the valve stiction dashboard. Reads detection resul
 - `GET /api/sensors/{id}/windows?limit=N` — recent raw PV/OP windows for a sensor.
 - `GET /ws` — WebSocket; sends an initial snapshot, then a diff-based `update` message whenever a sensor's status changes. Polls every second (`PollInterval` in `delivery/ws/hub.go`) rather than any pub/sub — no shared channel exists between this and ingestion, and a 1s poll is simple and cheap enough at this data volume.
 - `GET /healthz`
+
+API-only — the frontend is a separately built/deployed nginx image that reverse-proxies to this service; this repo's build never touches the frontend's source. (An earlier version had this service clone and build the frontend at image-build time — reverted, see `docs/V3_PLAN.md`'s revision note; reaching into another repo's source during a build couples two services that should deploy independently.)
 
 ## Architecture
 
@@ -28,6 +103,11 @@ go build -o backend .
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/valve_stiction ./backend
 ```
 
+```bash
+docker build -t valve-stiction-backend .
+docker run -p 8080:8080 -e DATABASE_URL=... valve-stiction-backend
+```
+
 | Env var | Default |
 |---|---|
 | `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/valve_stiction` |
@@ -37,6 +117,21 @@ Run [valve-stiction-frontend](https://github.com/maulanaiskak/valve-stiction-fro
 
 `db/init.sql` is a copy of the shared TimescaleDB schema (also kept in [valve-stiction-ingestion](https://github.com/maulanaiskak/valve-stiction-ingestion) and [valve-stiction-detection](https://github.com/maulanaiskak/valve-stiction-detection) — no shared/orchestrator repo, so each service keeps its own copy).
 
-## Design history
+## Testing
 
-`docs/` holds the build-decision docs (`V1_PLAN.md` through `V3_PLAN.md`) from when this whole pipeline was one monorepo, before it split into the five repos linked above, plus system-wide reference docs that cover all five: `HLD.md` (requirements, architecture, ERD, sequence/state diagrams, decision flowchart), `E2E_TEST.md` (all 5 repos wired together and verified working), `STREAMING_EVALUATION.md` (a quantified evaluation — classic detector vs. RF model — against 267 live-streamed windows), and `WHITEPAPER.md` (the full writeup, building on the author's undergraduate thesis this project is based on).
+```bash
+go test ./...
+go vet ./...
+```
+
+## Documentation
+
+Everything in `docs/` covers the whole 5-repo system, not just this service — kept here since this is where the pipeline's data ends up and the dashboard begins:
+
+| Doc | Contents |
+|---|---|
+| [HLD.md](docs/HLD.md) | Functional/non-functional requirements, architecture, ERD, sequence diagrams, state diagrams, decision flowchart |
+| [WHITEPAPER.md](docs/WHITEPAPER.md) | Full writeup: the RF model's train/serve failure, the fix, its honest boundary, and real-data verification — building on the author's undergraduate thesis |
+| [STREAMING_EVALUATION.md](docs/STREAMING_EVALUATION.md) | Quantified classic-vs-RF evaluation against live-streamed windows, before and after the fix, on both synthetic and real data |
+| [E2E_TEST.md](docs/E2E_TEST.md) | All 5 repos wired together manually and verified interoperating, no orchestrator |
+| [V1_PLAN.md](docs/V1_PLAN.md) / [V2_PLAN.md](docs/V2_PLAN.md) / [V3_PLAN.md](docs/V3_PLAN.md) | Build-decision history from when this was one monorepo, before the 5-repo split |
