@@ -39,4 +39,4 @@ Run [valve-stiction-frontend](https://github.com/maulanaiskak/valve-stiction-fro
 
 ## Design history
 
-`docs/` holds the build-decision docs (`V1_PLAN.md` through `V3_PLAN.md`) from when this whole pipeline was one monorepo, before it split into the five repos linked above. Kept here since this service is what all three phases eventually converge on.
+`docs/` holds the build-decision docs (`V1_PLAN.md` through `V3_PLAN.md`) from when this whole pipeline was one monorepo, before it split into the five repos linked above, plus system-wide reference docs that cover all five: `HLD.md` (requirements, architecture, ERD, sequence/state diagrams, decision flowchart), `E2E_TEST.md` (all 5 repos wired together and verified working), `STREAMING_EVALUATION.md` (a quantified evaluation — classic detector vs. RF model — against 267 live-streamed windows), and `WHITEPAPER.md` (the full writeup, building on the author's undergraduate thesis this project is based on).
