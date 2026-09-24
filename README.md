@@ -25,3 +25,7 @@ Serves the dashboard at `STATIC_DIR` (default `./static`) — point it at a buil
 | `STATIC_DIR` | `./static` |
 
 `db/init.sql` is a copy of the shared TimescaleDB schema (also kept in [valve-stiction-ingestion](https://github.com/maulanaiskak/valve-stiction-ingestion) and [valve-stiction-detection](https://github.com/maulanaiskak/valve-stiction-detection) — no shared/orchestrator repo, so each service keeps its own copy).
+
+## Design history
+
+`docs/` holds the build-decision docs (`V1_PLAN.md` through `V3_PLAN.md`) from when this whole pipeline was one monorepo, before it split into the five repos linked above. Kept here since this service is what all three phases eventually converge on.
