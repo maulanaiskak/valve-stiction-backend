@@ -1,4 +1,4 @@
-module valve-stiction-pipeline/backend
+module github.com/maulanaiskak/valve-stiction-backend
 
 go 1.25.5
 
