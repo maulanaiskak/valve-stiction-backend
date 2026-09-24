@@ -1,6 +1,12 @@
 // Package ws is the WebSocket delivery adapter: tracks connected clients
 // and polls usecase.SensorService for changes to push. No DB access here
 // -- that's usecase/repository's job.
+//
+// WS is the frontend's only data source -- both the snapshot sent on
+// connect and every subsequent update carry the full sensor status *and*
+// its latest window's pv/op, so the frontend never needs a REST call to
+// render anything (the REST endpoints in delivery/http still exist and
+// work, they're just not what the dashboard itself uses).
 package ws
 
 import (
@@ -29,21 +35,31 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// Hub tracks connected WebSocket clients and the last status it broadcast
-// per sensor, so it only sends when something actually changed.
+// sensorUpdate is the full WS payload for one sensor -- status plus its
+// latest window -- used for both the initial snapshot and every
+// subsequent update, so a client never has anything less than this.
+type sensorUpdate struct {
+	domain.SensorStatus
+	PV []float64 `json:"pv,omitempty"`
+	OP []float64 `json:"op,omitempty"`
+}
+
+// Hub tracks connected WebSocket clients and the last update it sent per
+// sensor, so it only broadcasts when something actually changed, and so a
+// newly-connecting client's snapshot is fully populated immediately.
 type Hub struct {
 	svc *usecase.SensorService
 
 	mu      sync.Mutex
 	clients map[*websocket.Conn]struct{}
-	last    map[string]domain.SensorStatus // sensor_id -> last broadcast status
+	last    map[string]sensorUpdate // sensor_id -> last broadcast update
 }
 
 func NewHub(svc *usecase.SensorService) *Hub {
 	return &Hub{
 		svc:     svc,
 		clients: make(map[*websocket.Conn]struct{}),
-		last:    make(map[string]domain.SensorStatus),
+		last:    make(map[string]sensorUpdate),
 	}
 }
 
@@ -56,9 +72,9 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 
 	h.mu.Lock()
 	h.clients[conn] = struct{}{}
-	// send whatever we currently know immediately, so a new client isn't
-	// stuck showing nothing until the next changed status.
-	initial := make([]domain.SensorStatus, 0, len(h.last))
+	// send whatever we currently know immediately (including pv/op), so a
+	// new client isn't stuck showing nothing until the next changed status.
+	initial := make([]sensorUpdate, 0, len(h.last))
 	for _, s := range h.last {
 		initial = append(initial, s)
 	}
@@ -87,7 +103,19 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-func (h *Hub) broadcast(update domain.SensorStatus) {
+// buildUpdate attaches the sensor's latest window (pv/op) to its status.
+func (h *Hub) buildUpdate(ctx context.Context, status domain.SensorStatus) sensorUpdate {
+	full := sensorUpdate{SensorStatus: status}
+	if windows, err := h.svc.RecentWindows(ctx, status.SensorID, 1); err == nil && len(windows) > 0 {
+		full.PV = windows[0].PV
+		full.OP = windows[0].OP
+	} else if err != nil {
+		log.Printf("[%s] failed to fetch latest window for WS push: %v", status.SensorID, err)
+	}
+	return full
+}
+
+func (h *Hub) broadcast(update sensorUpdate) {
 	payload, err := json.Marshal(map[string]any{"type": "update", "sensor": update})
 	if err != nil {
 		log.Printf("failed to marshal update: %v", err)
@@ -129,9 +157,12 @@ func (h *Hub) Run(ctx context.Context) {
 				if ok && !s.WindowStart.After(prev.WindowStart) {
 					continue // no new window for this sensor
 				}
-				h.last[s.SensorID] = s
 				h.mu.Unlock()
-				h.broadcast(s)
+				update := h.buildUpdate(ctx, s)
+				h.mu.Lock()
+				h.last[s.SensorID] = update
+				h.mu.Unlock()
+				h.broadcast(update)
 				h.mu.Lock()
 			}
 			h.mu.Unlock()
