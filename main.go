@@ -1,7 +1,12 @@
-// Backend service (PRD V4 / docs/V3_PLAN.md): serves the dashboard's REST
-// API, a WebSocket for live status/animation updates, and the built React
-// frontend's static files -- one Go binary, matching the author's own
-// framing ("go service untuk serve fe").
+// Backend service: REST API + WebSocket for the valve stiction dashboard.
+// API-only -- valve-stiction-frontend is a separately built/deployed nginx
+// image that reverse-proxies to this service (see its Dockerfile and
+// docs/V3_PLAN.md's revision note). An earlier version had this service
+// build and serve the frontend's static files directly, with the frontend
+// pulled in via `git clone` at this image's build time -- reaching into
+// another repo's source at build time couples the two services' build
+// lifecycles together, which isn't how independently deployable services
+// should work. Reverted.
 package main
 
 import (
@@ -96,21 +101,7 @@ func main() {
 	})
 	mux.HandleFunc("GET /ws", h.serveWS)
 
-	// Anything else: serve the built React app's static files. staticDir is
-	// the frontend's Vite build output, copied in at image build time (see
-	// backend/Dockerfile) -- 404s (missing asset paths) fall through to
-	// index.html so React Router-style client-side routes still load.
-	staticDir := getenv("STATIC_DIR", "./static")
-	fileServer := http.FileServer(http.Dir(staticDir))
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		if _, err := os.Stat(staticDir + r.URL.Path); err != nil {
-			http.ServeFile(w, r, staticDir+"/index.html")
-			return
-		}
-		fileServer.ServeHTTP(w, r)
-	})
-
 	port := getenv("BACKEND_PORT", "8080")
-	log.Printf("backend listening on :%s (static dir: %s)", port, staticDir)
+	log.Printf("backend listening on :%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, mux))
 }

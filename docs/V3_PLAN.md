@@ -2,7 +2,7 @@
 
 > Written when this project was one monorepo (`valve-stiction-pipeline`). Right after this was built and verified, the monorepo was split into [valve-stiction-simulator](https://github.com/maulanaiskak/valve-stiction-simulator), [valve-stiction-ingestion](https://github.com/maulanaiskak/valve-stiction-ingestion), [valve-stiction-detection](https://github.com/maulanaiskak/valve-stiction-detection), [valve-stiction-backend](https://github.com/maulanaiskak/valve-stiction-backend) (this repo), and [valve-stiction-frontend](https://github.com/maulanaiskak/valve-stiction-frontend) — one repo per service, no orchestrator repo tying them together (each service's README documents its own env vars and how it connects to the others). Kept here for the design history; file paths below refer to the old monorepo layout.
 
-Status: done, then split into per-service repos (see note above). Scope: replace Grafana-as-primary-FE with a purpose-built
+Status: done, then split into per-service repos (see note above), then had one design flaw corrected post-split (see "Revision" at the bottom). Scope: replace Grafana-as-primary-FE with a purpose-built
 dashboard, and stop leaving the trained RF model (valve-stiction-ml) unused.
 
 ## Why
@@ -111,3 +111,29 @@ nothing), and the dashboard already surfaces both labels side by side —
 letting a viewer see the disagreement directly is a more honest demo than
 hiding it. Worth calling out explicitly in demos/writeups as a real
 lesson about synthetic-data validation, not swept under the rug.
+
+## Revision: backend cloning frontend at build time was a mistake
+
+When the monorepo split into 5 repos, `backend`'s Dockerfile kept "serve
+the frontend" working by adding a build stage that ran `git clone` on
+`valve-stiction-frontend` and built it from source, then copied the
+result into the backend's own image (documented at the time as
+"consistent with `valve-stiction-ml`'s `pip install git+https://...`
+pattern"). That comparison doesn't hold: installing a published Python
+package is a normal dependency; cloning and building another service's
+raw application source inside a different service's Docker build is not
+-- it makes backend's build depend on frontend's repo, branch, and
+toolchain being available and correct *at backend's build time*, which
+is exactly the kind of coupling splitting into separate repos was
+supposed to remove. Caught when comparing against a real production
+service's structure (single-responsibility Dockerfile, no cross-service
+source reach-ins, deployed independently via its own CI/CD).
+
+Fixed: `backend` is API/WebSocket-only again -- no static-file serving,
+no `STATIC_DIR`, no frontend awareness at all. `valve-stiction-frontend`
+now ships its own multi-stage Dockerfile (`npm run build`, then
+`nginx:alpine` serving the output) with nginx reverse-proxying `/api` and
+`/ws` to a `BACKEND_HOST` env var -- same-origin from the browser's
+perspective, zero build-time coupling between the two repos. Each image
+builds and deploys entirely on its own now, which was the actual goal of
+splitting into 5 repos in the first place.
