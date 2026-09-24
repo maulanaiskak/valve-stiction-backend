@@ -81,3 +81,18 @@ Full reasoning, the label-quality bug the test suite caught, and the complete be
 **Is this overfitting?** Checked directly rather than assumed. No train/validation leakage (group-based CV keyed by synthetic config, not window) and SACAC's real-data performance is unchanged (0.865 ROC-AUC, same before and after augmentation) — so it isn't overfitting in the classic sense. But a genuine out-of-distribution test (signal parameters well outside the trained ranges — see `valve-stiction-ml/scripts/check_ood_generalization.py`) scores AUC ~0.43–0.47, chance level. The 99.6% above holds for the family of signals this pipeline actually generates and streams; it says nothing about a meaningfully different signal shape, and the model did not learn a distribution-invariant concept of stiction from this augmentation.
 
 This doesn't retire NFR-1 — if anything, the OOD check is the concrete evidence for why it exists, not just a hedge against a hypothetical. The classic detector keeps running unconditionally regardless of how well the RF scores on any one evaluation.
+
+## Real data, streamed live (not just synthetic)
+
+Every number above used the synthetic simulator. A natural follow-up question: does the same pipeline hold up on *real* SACAC data streamed live, not just batch-evaluated offline? Checked directly.
+
+**First attempt was misleading — small, unlucky sample.** Replayed 6 real SACAC CSV files (3 stiction, 3 non-stiction) over MQTT through the live pipeline: classic detector 49.2% accuracy, RF 57.6% accuracy / AUC 0.551 — alarming, and initially looked like a live-streaming-specific bug (activity-guard behavior, windowing config). Isolated that hypothesis directly: called the detection service's gRPC endpoint with the exact same non-overlapping windows and file-level activity reference the offline evaluation uses, sensor-by-sensor. Live and offline-equivalent labeling agreed on 283/289 windows (98%) and landed on the *identical* overall accuracy — the activity-guard/windowing difference wasn't the cause.
+
+**Root cause: the 6-file sample was unrepresentative, not the pipeline.** One file (`other-F-chemicals-thornhill-2003.csv`, folder-labeled "healthy") had the classic detector call *every* confident window "yes" — a single outlier dominating a 6-file average. Re-ran the identical check across the **entire SACAC corpus** (38 files, 1424 non-overlapping windows, same offline methodology, uncertain windows excluded per this project's own convention):
+
+| | Confident-window accuracy | AUC |
+|---|---|---|
+| Classic detector | 86.3% | — |
+| RF model | 88.2% | 0.920 |
+
+Both match or exceed the historically documented numbers (classic ~86.8% folder-label agreement, RF ROC-AUC 0.865) — evaluated live-equivalent, at full corpus scale, the real-data pipeline works as well as the offline validation always claimed. No online/incremental learning was needed — there was no real degradation to train away, only a bad diagnostic sample. Kept as a documented methodological lesson: a 6-file, unbalanced-per-file-length sample is not a reliable estimate of corpus-wide performance, and a surprising number is worth re-checking at scale before concluding a system is broken.
