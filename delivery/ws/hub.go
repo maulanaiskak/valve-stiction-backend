@@ -1,4 +1,7 @@
-package main
+// Package ws is the WebSocket delivery adapter: tracks connected clients
+// and polls usecase.SensorService for changes to push. No DB access here
+// -- that's usecase/repository's job.
+package ws
 
 import (
 	"context"
@@ -9,13 +12,15 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/maulanaiskak/valve-stiction-backend/domain"
+	"github.com/maulanaiskak/valve-stiction-backend/usecase"
 )
 
-// PollInterval: how often the hub checks TimescaleDB for new results. No
-// pub/sub between ingestion and backend (two independent processes, no
-// existing shared channel) -- a short poll is simple, correct, and cheap
-// at this data volume. See docs/V3_PLAN.md.
+// PollInterval: how often the hub checks for new results. No pub/sub
+// between ingestion and backend (two independent processes, no existing
+// shared channel) -- a short poll is simple, correct, and cheap at this
+// data volume. See docs/V3_PLAN.md.
 const PollInterval = 1 * time.Second
 
 var upgrader = websocket.Upgrader{
@@ -24,25 +29,25 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// hub tracks connected WebSocket clients and the last status it broadcast
+// Hub tracks connected WebSocket clients and the last status it broadcast
 // per sensor, so it only sends when something actually changed.
-type hub struct {
-	db *pgxpool.Pool
+type Hub struct {
+	svc *usecase.SensorService
 
 	mu      sync.Mutex
 	clients map[*websocket.Conn]struct{}
-	last    map[string]SensorStatus // sensor_id -> last broadcast status
+	last    map[string]domain.SensorStatus // sensor_id -> last broadcast status
 }
 
-func newHub(db *pgxpool.Pool) *hub {
-	return &hub{
-		db:      db,
+func NewHub(svc *usecase.SensorService) *Hub {
+	return &Hub{
+		svc:     svc,
 		clients: make(map[*websocket.Conn]struct{}),
-		last:    make(map[string]SensorStatus),
+		last:    make(map[string]domain.SensorStatus),
 	}
 }
 
-func (h *hub) serveWS(w http.ResponseWriter, r *http.Request) {
+func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("websocket upgrade failed: %v", err)
@@ -53,7 +58,7 @@ func (h *hub) serveWS(w http.ResponseWriter, r *http.Request) {
 	h.clients[conn] = struct{}{}
 	// send whatever we currently know immediately, so a new client isn't
 	// stuck showing nothing until the next changed status.
-	initial := make([]SensorStatus, 0, len(h.last))
+	initial := make([]domain.SensorStatus, 0, len(h.last))
 	for _, s := range h.last {
 		initial = append(initial, s)
 	}
@@ -82,7 +87,7 @@ func (h *hub) serveWS(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-func (h *hub) broadcast(update SensorStatus) {
+func (h *Hub) broadcast(update domain.SensorStatus) {
 	payload, err := json.Marshal(map[string]any{"type": "update", "sensor": update})
 	if err != nil {
 		log.Printf("failed to marshal update: %v", err)
@@ -100,10 +105,10 @@ func (h *hub) broadcast(update SensorStatus) {
 	}
 }
 
-// run polls the DB on PollInterval and broadcasts any sensor whose latest
+// Run polls on PollInterval and broadcasts any sensor whose latest
 // window_start moved forward since the last poll -- diff-based so idle
 // sensors don't spam connected clients with identical state.
-func (h *hub) run(ctx context.Context) {
+func (h *Hub) Run(ctx context.Context) {
 	ticker := time.NewTicker(PollInterval)
 	defer ticker.Stop()
 
@@ -112,7 +117,7 @@ func (h *hub) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			statuses, err := latestStatusPerSensor(ctx, h.db)
+			statuses, err := h.svc.LatestStatuses(ctx)
 			if err != nil {
 				log.Printf("poll failed: %v", err)
 				continue

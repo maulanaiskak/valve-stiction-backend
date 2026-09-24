@@ -6,8 +6,20 @@ REST + WebSocket backend for the valve stiction dashboard. Reads detection resul
 
 - `GET /api/sensors` — latest status per sensor.
 - `GET /api/sensors/{id}/windows?limit=N` — recent raw PV/OP windows for a sensor.
-- `GET /ws` — WebSocket; sends an initial snapshot, then a diff-based `update` message whenever a sensor's status changes. Polls TimescaleDB every second (`PollInterval` in `ws.go`) rather than any pub/sub — no shared channel exists between this and ingestion, and a 1s poll is simple and cheap enough at this data volume.
+- `GET /ws` — WebSocket; sends an initial snapshot, then a diff-based `update` message whenever a sensor's status changes. Polls every second (`PollInterval` in `delivery/ws/hub.go`) rather than any pub/sub — no shared channel exists between this and ingestion, and a 1s poll is simple and cheap enough at this data volume.
 - `GET /healthz`
+
+## Architecture
+
+Layered: `domain` (plain types, no I/O) → `usecase` (a thin service delivery adapters call — never touch `repository` directly) → `repository` (TimescaleDB reads) → `delivery` (REST and WebSocket adapters). `main.go` is just wiring.
+
+```
+domain/sensor.go              SensorStatus, WindowSample -- plain data
+repository/sensor_repo.go      TimescaleDB reads
+usecase/sensor_service.go      thin pass-through -- delivery calls this, not repository directly
+delivery/http/handlers.go      REST: /api/sensors, /api/sensors/{id}/windows, /healthz
+delivery/ws/hub.go             WebSocket: connection tracking + poll-and-diff broadcast
+```
 
 ## Run
 

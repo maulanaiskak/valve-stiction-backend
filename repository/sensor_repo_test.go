@@ -1,8 +1,10 @@
-package main
+package repository
 
 import (
 	"testing"
 	"time"
+
+	"github.com/maulanaiskak/valve-stiction-backend/domain"
 )
 
 func TestReverseInPlace_ChronologicalOrder(t *testing.T) {
@@ -11,7 +13,7 @@ func TestReverseInPlace_ChronologicalOrder(t *testing.T) {
 	oldest := newest.Add(-2 * time.Second)
 
 	// DB returns newest-first (ORDER BY window_start DESC LIMIT n)
-	out := []WindowSample{{WindowStart: newest}, {WindowStart: older}, {WindowStart: oldest}}
+	out := []domain.WindowSample{{WindowStart: newest}, {WindowStart: older}, {WindowStart: oldest}}
 	reverseInPlace(out)
 
 	if !out[0].WindowStart.Equal(oldest) || !out[2].WindowStart.Equal(newest) {
@@ -21,7 +23,7 @@ func TestReverseInPlace_ChronologicalOrder(t *testing.T) {
 
 func TestReverseInPlace_EmptyAndSingle(t *testing.T) {
 	reverseInPlace(nil) // must not panic
-	one := []WindowSample{{WindowStart: time.Now()}}
+	one := []domain.WindowSample{{WindowStart: time.Now()}}
 	reverseInPlace(one)
 	if len(one) != 1 {
 		t.Fatalf("expected single-element slice unchanged, got %v", one)
